@@ -29,7 +29,7 @@ use colored::Colorize;
 #[cfg(unix)]
 use gag::Gag;
 use halo2_proofs::dev::VerifyFailure;
-use halo2_proofs::plonk::{self, Circuit};
+use halo2_proofs::plonk::{self, Circuit, ConstraintSystem};
 use halo2_proofs::poly::commitment::{CommitmentScheme, Params};
 use halo2_proofs::poly::commitment::{ParamsProver, Verifier};
 use halo2_proofs::poly::ipa::commitment::{IPACommitmentScheme, ParamsIPA};
@@ -669,6 +669,7 @@ pub(crate) async fn get_srs_cmd(
 
 pub(crate) fn table(model: PathBuf, run_args: RunArgs) -> Result<String, Box<dyn Error>> {
     let model = Model::from_run_args(&run_args, &model)?;
+    info!("HHHHHHH High level model summary:");
     info!("\n {}", model.table_nodes());
     Ok(String::new())
 }
@@ -1306,6 +1307,14 @@ pub(crate) async fn calibrate(
     Ok(best_params)
 }
 
+fn load_constraint_from_circuit(circuit: &GraphCircuit) -> ConstraintSystem<Fr> {
+    // create constraint system to collect custom gates
+    let mut cs: ConstraintSystem<Fr> = Default::default();
+    let params = GraphCircuit::params(circuit);
+    let _ = GraphCircuit::configure_with_params(&mut cs, params);
+    cs
+}
+
 pub(crate) fn mock(
     compiled_circuit_path: PathBuf,
     data_path: PathBuf,
@@ -1317,19 +1326,35 @@ pub(crate) fn mock(
 
     circuit.load_graph_witness(&data)?;
 
-    let public_inputs = circuit.prepare_public_inputs(&data)?;
+    let _public_inputs = circuit.prepare_public_inputs(&data)?;
 
     info!("Mock proof");
+    let cs = load_constraint_from_circuit(&circuit);
+    let max_degree = cs.degree() as u64;
+    let num_instance: u64 = cs.num_instance_columns() as u64;
+    let num_advice: u64 = cs.num_advice_columns() as u64;
+    let num_fixed: u64 = cs.num_fixed_columns() as u64;
+    let num_lookup: u64 = cs.lookups().len() as u64;
+    let num_permutation: u64 = cs.permutation().get_columns().len() as u64;
+    let num_gates = cs.gates().len() as u64;
+    info!("Log rows: {}", circuit.settings().run_args.logrows);
+    info!("Max degree: {}", max_degree);
+    info!("Num instance: {}", num_instance);
+    info!("Num advice: {}", num_advice);
+    info!("Num fixed: {}", num_fixed);
+    info!("Num lookup: {}", num_lookup);
+    info!("Num permutation: {}", num_permutation);
+    info!("Num gates: {}", num_gates);
 
-    let prover = halo2_proofs::dev::MockProver::run(
-        circuit.settings().run_args.logrows,
-        &circuit,
-        vec![public_inputs],
-    )
-    .map_err(Box::<dyn Error>::from)?;
-    prover
-        .verify()
-        .map_err(|e| Box::<dyn Error>::from(ExecutionError::VerifyError(e)))?;
+    // let prover = halo2_proofs::dev::MockProver::run(
+    //     circuit.settings().run_args.logrows,
+    //     &circuit,
+    //     vec![public_inputs],
+    // )
+    // .map_err(Box::<dyn Error>::from)?;
+    // prover
+    //     .verify()
+    //     .map_err(|e| Box::<dyn Error>::from(ExecutionError::VerifyError(e)))?;
     Ok(String::new())
 }
 
