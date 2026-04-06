@@ -2,18 +2,12 @@
 """
 nanoGPT Proof Generation with EZKL
 
-This script creates a nanoGPT-style transformer model and proves inference with EZKL.
-Based on EZKL's demonstrated nanoGPT experiments.
-
-Model configurations:
-- tiny: ~250K params, 4 layers (matches EZKL blog "tiny" model)
-- small: ~1M params, 8 layers (similar to EZKL blog "small" model)
-- medium: ~10M params, 12 layers (larger test)
+Based on EZKL's working little_transformer example.
 
 Usage:
-  python nanogpt_prove.py --size tiny --mock-only     # Quick test (no real proof)
-  python nanogpt_prove.py --size tiny                 # Full proof generation
-  python nanogpt_prove.py --size small --mock-only   # Test small model
+  python nanogpt_prove.py --size tiny --mock-only     # Quick test
+  python nanogpt_prove.py --size tiny                 # Full proof
+  python nanogpt_prove.py --size medium               # Larger model
 
 Requirements:
   pip install ezkl torch numpy onnx
@@ -30,93 +24,104 @@ import torch.nn.functional as F
 
 
 # ============================================================
-# nanoGPT Model Definition
+# Model Definition (matching EZKL's little_transformer exactly)
 # ============================================================
 
+def attention(queries, keys, values):
+    """Simple attention without view/transpose ops for EZKL compatibility."""
+    d = queries.shape[-1]
+    scores = torch.matmul(queries, keys.transpose(-2, -1)) / math.sqrt(d)
+    attention_weights = F.softmax(scores, dim=-1)
+    return torch.matmul(attention_weights, values)
+
+
 class MultiHeadAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, dropout=0.0):
+    def __init__(self, embed_dim, num_heads):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
         assert embed_dim % num_heads == 0
+        self.projection_dim = embed_dim // num_heads
 
-        self.W_q = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.W_k = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.W_v = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.W_o = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.dropout = nn.Dropout(dropout)
+        self.W_q = nn.Linear(embed_dim, embed_dim)
+        self.W_k = nn.Linear(embed_dim, embed_dim)
+        self.W_v = nn.Linear(embed_dim, embed_dim)
+        self.W_o = nn.Linear(embed_dim, embed_dim)
 
-    def forward(self, x):
-        B, T, C = x.shape
+    def transpose(self, x):
+        x = x.reshape(x.shape[0], x.shape[1], self.num_heads, self.projection_dim)
+        return x.permute(0, 2, 1, 3)
 
-        q = self.W_q(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.W_k(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.W_v(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+    def transpose_output(self, x):
+        x = x.permute(0, 2, 1, 3)
+        return x.reshape(x.shape[0], x.shape[1], self.embed_dim)
 
-        # Attention scores
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-
-        # Apply attention to values
-        out = torch.matmul(attn_weights, v)
-        out = out.transpose(1, 2).contiguous().view(B, T, C)
-        return self.W_o(out)
+    def forward(self, q, k, v):
+        q = self.transpose(self.W_q(q))
+        k = self.transpose(self.W_k(k))
+        v = self.transpose(self.W_v(v))
+        output = attention(q, k, v)
+        return self.W_o(self.transpose_output(output))
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, ff_dim, dropout=0.0):
+    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
         super().__init__()
-        self.ln1 = nn.LayerNorm(embed_dim)
-        self.attn = MultiHeadAttention(embed_dim, num_heads, dropout)
-        self.ln2 = nn.LayerNorm(embed_dim)
+        self.att = MultiHeadAttention(embed_dim, num_heads)
         self.ffn = nn.Sequential(
             nn.Linear(embed_dim, ff_dim),
-            nn.ReLU(),  # Use ReLU instead of GELU for EZKL compatibility
-            nn.Linear(ff_dim, embed_dim),
-            nn.Dropout(dropout)
+            nn.ReLU(),
+            nn.Linear(ff_dim, embed_dim)
         )
+        self.layernorm1 = nn.LayerNorm(embed_dim)
+        self.layernorm2 = nn.LayerNorm(embed_dim)
+        self.dropout = nn.Dropout(rate)
 
     def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = x + self.ffn(self.ln2(x))
+        x = self.layernorm1(x + self.dropout(self.att(x, x, x)))
+        x = self.layernorm2(x + self.dropout(self.ffn(x)))
         return x
 
 
-class NanoGPT(nn.Module):
-    """
-    A minimal GPT-style model for EZKL proving.
+class TokenAndPositionEmbedding(nn.Module):
+    def __init__(self, maxlen, vocab_size, embed_dim):
+        super().__init__()
+        self.token_emb = nn.Embedding(vocab_size, embed_dim)
+        self.pos_emb = nn.Embedding(maxlen, embed_dim)
 
-    Configurations matching EZKL blog:
-    - tiny: ~250K params (4 layers, 128 embed, 4 heads)
-    - small: ~1M params (8 layers, 256 embed, 8 heads)
-    - medium: ~10M params (12 layers, 512 embed, 8 heads)
+    def forward(self, x):
+        pos = torch.arange(0, x.size(1), dtype=torch.long, device=x.device)
+        return self.token_emb(x) + self.pos_emb(pos).view(1, x.size(1), -1)
+
+
+class LittleTransformer(nn.Module):
+    """
+    Transformer model matching EZKL's little_transformer example.
     """
 
     CONFIGS = {
         'tiny': {
-            'vocab_size': 256,
             'seq_len': 1,
+            'max_value': 256,
+            'layer_count': 4,
             'embed_dim': 128,
             'num_heads': 4,
-            'num_layers': 4,
             'ff_dim': 512,
         },
         'small': {
-            'vocab_size': 256,
             'seq_len': 1,
+            'max_value': 256,
+            'layer_count': 8,
             'embed_dim': 256,
             'num_heads': 8,
-            'num_layers': 8,
             'ff_dim': 1024,
         },
         'medium': {
-            'vocab_size': 256,
             'seq_len': 1,
+            'max_value': 256,
+            'layer_count': 12,
             'embed_dim': 512,
             'num_heads': 8,
-            'num_layers': 12,
             'ff_dim': 2048,
         },
     }
@@ -124,52 +129,20 @@ class NanoGPT(nn.Module):
     def __init__(self, config_name='tiny'):
         super().__init__()
         cfg = self.CONFIGS[config_name]
-
-        self.vocab_size = cfg['vocab_size']
+        self.cfg = cfg
+        self.max_value = cfg['max_value']
         self.seq_len = cfg['seq_len']
-        self.embed_dim = cfg['embed_dim']
 
-        # Token and position embeddings
-        self.token_emb = nn.Embedding(cfg['vocab_size'], cfg['embed_dim'])
-        self.pos_emb = nn.Embedding(cfg['seq_len'], cfg['embed_dim'])
-
-        # Transformer blocks
-        self.blocks = nn.Sequential(*[
-            TransformerBlock(cfg['embed_dim'], cfg['num_heads'], cfg['ff_dim'])
-            for _ in range(cfg['num_layers'])
-        ])
-
-        # Output head
-        self.ln_f = nn.LayerNorm(cfg['embed_dim'])
-        self.head = nn.Linear(cfg['embed_dim'], cfg['vocab_size'], bias=False)
-
-        # Initialize weights
-        self.apply(self._init_weights)
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        self.model = nn.Sequential(
+            TokenAndPositionEmbedding(cfg['seq_len'], cfg['max_value'], cfg['embed_dim']),
+            *[TransformerBlock(cfg['embed_dim'], cfg['num_heads'], cfg['ff_dim'])
+              for _ in range(cfg['layer_count'])],
+            nn.Linear(cfg['embed_dim'], cfg['max_value']),
+            nn.LogSoftmax(dim=-1)
+        )
 
     def forward(self, x):
-        B, T = x.shape
-
-        # Embeddings
-        pos = torch.arange(0, T, dtype=torch.long, device=x.device)
-        tok_emb = self.token_emb(x)
-        pos_emb = self.pos_emb(pos)
-        x = tok_emb + pos_emb
-
-        # Transformer blocks
-        x = self.blocks(x)
-
-        # Output
-        x = self.ln_f(x)
-        logits = self.head(x)
-        return logits
+        return self.model(x)
 
     def count_parameters(self):
         return sum(p.numel() for p in self.parameters())
@@ -189,12 +162,13 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
     settings_path = os.path.join(output_dir, 'settings.json')
     compiled_path = os.path.join(output_dir, 'model.compiled')
     witness_path = os.path.join(output_dir, 'witness.json')
+    cal_path = os.path.join(output_dir, 'calibration.json')
     pk_path = os.path.join(output_dir, 'proving.key')
     vk_path = os.path.join(output_dir, 'verifying.key')
     proof_path = os.path.join(output_dir, 'proof.json')
 
     # 1. Generate settings
-    print("\n[1/8] Generating settings...")
+    print("\n[1/9] Generating settings...")
     start = time.time()
     try:
         res = ezkl.gen_settings(model_path, settings_path)
@@ -208,7 +182,7 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
         return timings
 
     # 2. Calibrate settings
-    print("\n[2/8] Calibrating settings...")
+    print("\n[2/9] Calibrating settings...")
     start = time.time()
     try:
         res = ezkl.calibrate_settings(data_path, model_path, settings_path, "resources")
@@ -222,7 +196,7 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
         return timings
 
     # 3. Compile circuit
-    print("\n[3/8] Compiling circuit...")
+    print("\n[3/9] Compiling circuit...")
     start = time.time()
     try:
         res = ezkl.compile_circuit(model_path, compiled_path, settings_path)
@@ -236,11 +210,15 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
         return timings
 
     # 4. Get SRS
-    print("\n[4/8] Getting SRS (structured reference string)...")
+    print("\n[4/9] Getting SRS (structured reference string)...")
     start = time.time()
     try:
         import asyncio
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         res = loop.run_until_complete(ezkl.get_srs(settings_path))
         timings['get_srs'] = time.time() - start
         print(f"  Done in {timings['get_srs']:.2f}s")
@@ -250,7 +228,7 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
         return timings
 
     # 5. Generate witness
-    print("\n[5/8] Generating witness...")
+    print("\n[5/9] Generating witness...")
     start = time.time()
     try:
         res = ezkl.gen_witness(data_path, compiled_path, witness_path)
@@ -263,8 +241,8 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
         timings['gen_witness'] = None
         return timings
 
-    # 6. Mock proof (verification without full proving)
-    print("\n[6/8] Running mock proof...")
+    # 6. Mock proof
+    print("\n[6/9] Running mock proof...")
     start = time.time()
     try:
         res = ezkl.mock(witness_path, compiled_path)
@@ -284,8 +262,8 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
         timings['verify'] = None
         return timings
 
-    # 7. Setup (generate proving/verifying keys)
-    print("\n[7/8] Setting up proving/verifying keys...")
+    # 7. Setup
+    print("\n[7/9] Setting up proving/verifying keys...")
     start = time.time()
     try:
         res = ezkl.setup(compiled_path, vk_path, pk_path)
@@ -299,7 +277,7 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
         return timings
 
     # 8. Prove
-    print("\n[8/8] Generating proof...")
+    print("\n[8/9] Generating proof...")
     start = time.time()
     try:
         res = ezkl.prove(witness_path, compiled_path, pk_path, proof_path)
@@ -308,7 +286,6 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
         timings['prove'] = time.time() - start
         print(f"  Done in {timings['prove']:.2f}s")
 
-        # Get proof size
         proof_size = os.path.getsize(proof_path)
         timings['proof_size_bytes'] = proof_size
         print(f"  Proof size: {proof_size / 1024:.2f} KB")
@@ -355,20 +332,20 @@ def main():
     print("=" * 60)
 
     # Create model
-    print(f"\nCreating nanoGPT-{args.size} model...")
-    model = NanoGPT(args.size)
+    print(f"\nCreating LittleTransformer-{args.size} model...")
+    model = LittleTransformer(args.size)
     model.eval()
 
     num_params = model.count_parameters()
     print(f"Model parameters: {num_params:,}")
-    print(f"Config: {NanoGPT.CONFIGS[args.size]}")
+    print(f"Config: {model.cfg}")
 
     # Create sample input
     seq_len = model.seq_len
-    x = torch.randint(0, model.vocab_size, (1, seq_len), dtype=torch.long)
+    x = torch.zeros((1, seq_len), dtype=torch.long)
 
-    # Export to ONNX
-    model_path = os.path.join(output_dir, 'nanogpt.onnx')
+    # Export to ONNX (matching EZKL's little_transformer exactly)
+    model_path = os.path.join(output_dir, 'network.onnx')
     print(f"\nExporting to ONNX...")
     start = time.time()
 
@@ -377,19 +354,23 @@ def main():
         x,
         model_path,
         export_params=True,
-        opset_version=10,  # Use opset 10 for better EZKL/tract compatibility
+        opset_version=10,
         do_constant_folding=True,
         input_names=['input'],
         output_names=['output'],
+        dynamic_axes={
+            'input': {0: 'batch_size'},
+            'output': {0: 'batch_size'}
+        }
     )
 
     export_time = time.time() - start
     onnx_size = os.path.getsize(model_path) / (1024 * 1024)
     print(f"ONNX export completed in {export_time:.2f}s, file size: {onnx_size:.2f} MB")
 
-    # Save input data
+    # Save input data (matching EZKL's format)
     data_path = os.path.join(output_dir, 'input.json')
-    data_array = x.numpy().flatten().tolist()
+    data_array = x.numpy().reshape([-1]).tolist()
     data_json = {'input_data': [data_array]}
     with open(data_path, 'w') as f:
         json.dump(data_json, f)
@@ -404,7 +385,7 @@ def main():
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    print(f"Model: nanoGPT-{args.size} ({num_params:,} parameters)")
+    print(f"Model: LittleTransformer-{args.size} ({num_params:,} parameters)")
 
     for step, t in timings.items():
         if t is not None:
