@@ -97,7 +97,7 @@ class NanoGPT(nn.Module):
     CONFIGS = {
         'tiny': {
             'vocab_size': 256,
-            'seq_len': 64,
+            'seq_len': 1,
             'embed_dim': 128,
             'num_heads': 4,
             'num_layers': 4,
@@ -105,7 +105,7 @@ class NanoGPT(nn.Module):
         },
         'small': {
             'vocab_size': 256,
-            'seq_len': 64,
+            'seq_len': 1,
             'embed_dim': 256,
             'num_heads': 8,
             'num_layers': 8,
@@ -113,7 +113,7 @@ class NanoGPT(nn.Module):
         },
         'medium': {
             'vocab_size': 256,
-            'seq_len': 64,
+            'seq_len': 1,
             'embed_dim': 512,
             'num_heads': 8,
             'num_layers': 12,
