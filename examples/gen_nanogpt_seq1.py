@@ -25,20 +25,29 @@ import os
 
 # Model size configurations
 MODEL_CONFIGS = {
-    'tiny': {   # EZKL's default nanoGPT
+    'tiny': {   # EZKL's default nanoGPT (~209K params)
         'n_layer': 4,
         'n_head': 4,
         'n_embd': 64,
+        'vocab_size': 65,
     },
     'small': {  # ~1.5M params
         'n_layer': 6,
         'n_head': 6,
         'n_embd': 192,
+        'vocab_size': 65,
     },
     'medium': { # ~10M params
         'n_layer': 12,
         'n_head': 8,
         'n_embd': 384,
+        'vocab_size': 65,
+    },
+    'gpt2': {   # GPT-2 small (~124M params)
+        'n_layer': 12,
+        'n_head': 12,
+        'n_embd': 768,
+        'vocab_size': 50257,
     },
 }
 
@@ -185,7 +194,7 @@ class GPT(nn.Module):
 
 def main():
     parser = argparse.ArgumentParser(description='Generate nanoGPT ONNX with seq_len=1')
-    parser.add_argument('--size', choices=['tiny', 'small', 'medium'], default='tiny',
+    parser.add_argument('--size', choices=['tiny', 'small', 'medium', 'gpt2'], default='tiny',
                         help='Model size (default: tiny)')
     parser.add_argument('--output-dir', default=None,
                         help='Output directory (default: nanogpt_{size}_seq1)')
@@ -198,7 +207,7 @@ def main():
     # Create GPT config
     gptconf = GPTConfig(
         block_size=64,   # Max seq len (for position embeddings)
-        vocab_size=65,
+        vocab_size=cfg['vocab_size'],
         n_layer=cfg['n_layer'],
         n_head=cfg['n_head'],
         n_embd=cfg['n_embd'],
@@ -215,7 +224,7 @@ def main():
 
     # Export with seq_len=1 for fair comparison
     seq_len = 1
-    x = torch.randint(65, (1, seq_len))
+    x = torch.randint(cfg['vocab_size'], (1, seq_len))
 
     print(f"\nInput shape: {x.shape} (batch=1, seq_len={seq_len})")
 
