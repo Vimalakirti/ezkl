@@ -73,7 +73,7 @@ class TransformerBlock(nn.Module):
         self.ln2 = nn.LayerNorm(embed_dim)
         self.ffn = nn.Sequential(
             nn.Linear(embed_dim, ff_dim),
-            nn.GELU(),
+            nn.ReLU(),  # Use ReLU instead of GELU for EZKL compatibility
             nn.Linear(ff_dim, embed_dim),
             nn.Dropout(dropout)
         )
@@ -377,14 +377,10 @@ def main():
         x,
         model_path,
         export_params=True,
-        opset_version=14,
+        opset_version=10,  # Use opset 10 for better EZKL/tract compatibility
         do_constant_folding=True,
         input_names=['input'],
         output_names=['output'],
-        dynamic_axes={
-            'input': {0: 'batch_size'},
-            'output': {0: 'batch_size'}
-        }
     )
 
     export_time = time.time() - start
