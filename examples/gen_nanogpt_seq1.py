@@ -235,6 +235,7 @@ def main():
     model_path = os.path.join(output_dir, 'network.onnx')
     print(f"\nExporting to {model_path}...")
 
+    # Use legacy exporter (dynamo=False) for opset 10 compatibility with EZKL
     torch.onnx.export(
         model,
         x,
@@ -247,7 +248,8 @@ def main():
         dynamic_axes={
             'input': {0: 'batch_size'},
             'output': {0: 'batch_size'}
-        }
+        },
+        dynamo=False,  # Use legacy exporter for opset 10 support
     )
 
     onnx_size = os.path.getsize(model_path) / 1024
