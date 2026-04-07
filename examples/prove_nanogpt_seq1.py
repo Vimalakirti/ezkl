@@ -76,12 +76,10 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
     start = time.time()
     try:
         import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        res = loop.run_until_complete(ezkl.get_srs(settings_path))
+        # Use asyncio.run() for Python 3.10+ compatibility
+        async def fetch_srs():
+            return await ezkl.get_srs(settings_path)
+        res = asyncio.run(fetch_srs())
         timings['get_srs'] = time.time() - start
         print(f"  Done in {timings['get_srs']:.2f}s")
     except Exception as e:
