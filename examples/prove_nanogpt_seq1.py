@@ -33,25 +33,19 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False, logrow
     print("\n[1/9] Generating settings...")
     start = time.time()
     try:
-        # Use larger logrows for bigger models like GPT-2
+        # Configure run args - set logrows BEFORE gen_settings for large models
         py_run_args = ezkl.PyRunArgs()
         py_run_args.input_visibility = "private"
         py_run_args.output_visibility = "public"
         py_run_args.param_visibility = "fixed"
+        if logrows is not None:
+            py_run_args.logrows = logrows
+            print(f"  Using logrows={logrows}")
         res = ezkl.gen_settings(model_path, settings_path, py_run_args=py_run_args)
         if not res:
             raise Exception("gen_settings returned False")
         timings['gen_settings'] = time.time() - start
         print(f"  Done in {timings['gen_settings']:.2f}s")
-
-        # Override logrows if specified
-        if logrows is not None:
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-            settings['run_args']['logrows'] = logrows
-            with open(settings_path, 'w') as f:
-                json.dump(settings, f, indent=2)
-            print(f"  Overrode logrows to {logrows}")
     except Exception as e:
         print(f"ERROR in gen_settings: {e}")
         timings['gen_settings'] = None
