@@ -16,7 +16,7 @@ import os
 import time
 
 
-def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
+def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False, logrows=None):
     """Run the complete EZKL proving pipeline."""
     import ezkl
 
@@ -33,11 +33,25 @@ def run_ezkl_pipeline(model_path, data_path, output_dir, mock_only=False):
     print("\n[1/9] Generating settings...")
     start = time.time()
     try:
-        res = ezkl.gen_settings(model_path, settings_path)
+        # Use larger logrows for bigger models like GPT-2
+        py_run_args = ezkl.PyRunArgs()
+        py_run_args.input_visibility = "private"
+        py_run_args.output_visibility = "public"
+        py_run_args.param_visibility = "fixed"
+        res = ezkl.gen_settings(model_path, settings_path, py_run_args=py_run_args)
         if not res:
             raise Exception("gen_settings returned False")
         timings['gen_settings'] = time.time() - start
         print(f"  Done in {timings['gen_settings']:.2f}s")
+
+        # Override logrows if specified
+        if logrows is not None:
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+            settings['run_args']['logrows'] = logrows
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f, indent=2)
+            print(f"  Overrode logrows to {logrows}")
     except Exception as e:
         print(f"ERROR in gen_settings: {e}")
         timings['gen_settings'] = None
@@ -171,6 +185,8 @@ def main():
                         help='Directory containing network.onnx and input.json')
     parser.add_argument('--mock-only', action='store_true',
                         help='Only run mock proof')
+    parser.add_argument('--logrows', type=int, default=None,
+                        help='Override logrows in settings (e.g., 20, 22, 24 for larger models)')
     args = parser.parse_args()
 
     model_path = os.path.join(args.model_dir, 'network.onnx')
@@ -186,10 +202,11 @@ def main():
     print("=" * 60)
     print(f"Model: {model_path}")
     print(f"Mock only: {args.mock_only}")
+    print(f"Logrows override: {args.logrows}")
     print("=" * 60)
 
     total_start = time.time()
-    timings = run_ezkl_pipeline(model_path, data_path, args.model_dir, args.mock_only)
+    timings = run_ezkl_pipeline(model_path, data_path, args.model_dir, args.mock_only, args.logrows)
     total_time = time.time() - total_start
 
     print("\n" + "=" * 60)
